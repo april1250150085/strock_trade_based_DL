@@ -11,82 +11,93 @@ device = torch.device('cpu')
 想办法怎么处理好前三维度和后面三个维度的影响力关系，不能只依靠股票信息来决定输出，毕竟一方面大多数情况
 下股票信息波动较小，另一方面不能指望在同一下股票信息下个人持股量不同就可以训练产生不同的动作信息
 """
-TRAIN_FILE_NAME = "52.764_9.2_999_603777"
-PRICE_FILE_NAME = "999_603777"
-# NAME = "1038_600977"
-# dp = pd.read_csv("D:/dataset/raw_data/"+NAME+'.csv')
-# dp = pd.read_csv("D:/dataset/processed_data/"+TRAIN_FILE_NAME+'.csv')
-dp = pd.read_csv("D:/dataset/raw_norm_data/"+TRAIN_FILE_NAME+'.csv')
-# dp = pd.read_csv("D:/dataset/raw_data/"+PRICE_FILE_NAME+'.csv')
-dp = dp.iloc[20:, 1:]
-dp2 = pd.read_csv("D:/dataset/raw_data/"+PRICE_FILE_NAME+'.csv')
-dp2 = dp2.iloc[20:, 2]
-# max_price = float(dp2.max())
-# min_price = float(dp2.min())
-# max_price = dp.iloc[:, 1].max()
-# min_price = dp.iloc[:, 1].min()
 
-hold = 1000
+# FILE_NAME = "1001_601128"
+# FILE_NAME = "1003_300545"
+FILE_NAME = "1000_603067"
+# FILE_NAME = "1001_600908"
+# PRICE_FILE_NAME = "999_603777"
+# NAME = "1038_600977"
+# dp = pd.read_csv("D:/dataset/norm_data/"+FILE_NAME+'.csv')
+dp = pd.read_csv("D:/dataset/new_processed/"+FILE_NAME+'.csv')
+dp = dp.iloc[20:, 1:]
+dp2 = pd.read_csv("D:/dataset/raw_data/"+FILE_NAME+'.csv')
+dp2 = dp2.iloc[20:, 2]
+
+hold = 100
 balance = 10000
 data_num = dp.shape[0]
-env_dim = dp.shape[1]
+state_dim = dp.shape[1]
+action_dim = 3
 train_length = round(len(dp)*0.75)
-k = 5
+k = 10
 
 
 class Environment(nn.Module):
     def __init__(self):
         super(Environment, self).__init__()
-        self.action_dim = env_dim
+        self.action_dim = action_dim
         self.balance = balance
         self.hold = hold
-        # self.data = np.array(dp)
-        # self.data = torch.from_numpy(dp.values).to(device)
         self.data = torch.tensor(dp.values, dtype=torch.float32).to(device)
         self.price_info = torch.tensor(dp2.values, dtype=torch.float32)
         self.env_length = len(self.data)
         self.train_length = train_length
-        self.env_dim = env_dim
+        self.state_dim = state_dim
         self.index = 0
         self.reward = 0
-        # self.max_value = max_price
-        # self.min_value = min_price
-        self.name = PRICE_FILE_NAME
+        self.current_price = self.price_info[self.index]
+        self.name = FILE_NAME
         self.change_balance = 0
         self.change_hold = 0
 
     def step(self, _action):  # 0->sell, 1->hold, 2->buy
+        last_hold = self.hold
+        last_balance = self.balance
         price = self.price_info[self.index % self.train_length]
         new_hold = self.hold+(_action-1)*k
-        new_balance = self.balance-(new_hold-self.hold)*price
+        new_balance = self.balance-(new_hold-self.hold)*price*100
         self.index += 1
         new_price = self.price_info[self.index % self.train_length]
-        # print(price.data.item(), " -> ", new_price.data.item())
-        last_value = self.balance + self.hold * price
+        self.current_price = new_price
+        last_value = self.balance + self.hold * price*100
         if new_hold > 0 and new_balance > 0:
             self.change_hold = new_hold-self.hold
             self.change_balance = new_balance-self.balance
             self.balance = new_balance
             self.hold = new_hold
-        r = self.balance + self.hold * new_price - last_value
-        new_state = self.state_cat(r, last_value)
-        return new_state, r
+        r = self.balance + self.hold * new_price*100 - last_value
+        r2 = r
+        a = torch.tensor([(self.hold-last_hold)/(1+last_hold)])
+        b = torch.tensor([(self.balance-last_balance)/(1+last_balance)])
+
+        new_state = torch.cat((a, b, self.data[self.index]), dim=0)
+        return new_state, r, r2
 
     def test_step(self, _action):
+        last_hold = self.hold
+        last_balance = self.balance
         price = self.price_info[self.index]
         new_hold = self.hold + (_action - 1) * k
-        new_balance = self.balance - (new_hold - self.hold) * price
+        new_balance = self.balance - (new_hold - self.hold) * price*100
         self.index += 1
         new_price = self.price_info[self.index]
-        last_value = self.balance + self.hold * price
+        self.current_price = new_price
+        # print(price.data.item(), " -> ", new_price.data.item())
+        last_value = self.balance + self.hold * price*100
+        # r2 = (new_price - price) * self.hold*100
         if new_hold > 0 and new_balance > 0:
             self.change_hold = new_hold - self.hold
             self.change_balance = new_balance - self.balance
             self.balance = new_balance
             self.hold = new_hold
-        r = self.balance + self.hold * new_price - last_value
-        new_state = self.state_cat(r, last_value)
-        return new_state, r
+        r = self.balance + self.hold * new_price*100 - last_value
+        r2 = r
+        a = torch.tensor([(self.hold - last_hold) / (1 + last_hold)])
+        b = torch.tensor([(self.balance - last_balance) / (1 + last_balance)])
+
+        new_state = torch.cat((a, b, self.data[self.index]), dim=0)
+        return new_state, r, r2
 
     def reset(self):
         self.hold = hold
@@ -94,9 +105,12 @@ class Environment(nn.Module):
         self.index = 0
         self.change_balance = 0
         self.change_hold = 0
-        price = self.price_info[self.index]
-        last_value = self.balance + self.hold * price
-        return self.state_cat(0, last_value)
+        self.current_price = self.price_info[self.index]
+        a = torch.tensor([0 / (1 + self.hold)])
+        b = torch.tensor([0 / (1 + self.balance)])
+
+        new_state = torch.cat((a, b, self.data[self.index]), dim=0)
+        return new_state
 
     def state_cat(self, r, last_value):
         a = self.data[self.index]
@@ -109,14 +123,16 @@ class Environment(nn.Module):
         return new_state
 
     def reset_for_test(self, index):
-        self.index = index
         self.hold = hold
         self.balance = balance
+        self.index = index
         self.change_balance = 0
         self.change_hold = 0
-        price = self.price_info[self.index]
-        last_value = self.balance + self.hold * price
-        return self.state_cat(0, last_value)
+        a = torch.tensor([0 / (1 + self.hold)])
+        b = torch.tensor([0 / (1 + self.balance)])
+        self.current_price = self.price_info[self.index]
+        new_state = torch.cat((a, b, self.data[self.index]), dim=0)
+        return new_state
 
 
 # env = Environment()

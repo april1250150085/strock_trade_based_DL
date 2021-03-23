@@ -1,0 +1,157 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+import gym
+from Net import DuelingNet as Net
+from matplotlib import pyplot as plt
+
+# 定义参数
+BATCH_SIZE = 64  # 每一批的训练量
+LR = 0.01  # 学习率
+EPSILON = 0.9  # 贪婪策略指数，Q-learning的一个指数，用于指示是探索还是利用。
+GAMMA = 1  # reward discount
+TARGET_REPLACE_ITER = 100  # target的更新频率
+MEMORY_CAPACITY = 5000
+env = gym.make('CartPole-v0')
+env = env.unwrapped
+N_ACTIONS = env.action_space.n
+N_STATES = env.observation_space.shape[0]
+Hidden_num = 50
+ENV_A_SHAPE = 0 if isinstance(env.action_space.sample(),
+                              int) else env.action_space.sample().shape  # to confirm the shape
+N = 10
+T = MEMORY_CAPACITY-1
+TAU = 0.001
+# 创建Q-learning的模型
+
+
+class DQN(object):
+    def __init__(self):
+        # 两张网是一样的，不过就是target_net是每100次更新一次，eval_net每次都更新
+        self.eval_net, self.target_net = Net(N_STATES, N_ACTIONS, Hidden_num), Net(N_STATES, N_ACTIONS, Hidden_num)
+
+        self.learn_step_counter = 0  # 如果次数到了，更新target_net
+        self.memory_counter = 0  # for storing memory
+        self.memory = np.zeros((MEMORY_CAPACITY, N_STATES * 2 + 2))  # 初始化记忆
+        self.memory_state = np.zeros((MEMORY_CAPACITY, N_STATES))
+        self.memory_next_state = np.zeros((MEMORY_CAPACITY, N_STATES))
+        self.memory_action = np.zeros((MEMORY_CAPACITY, 1))
+        self.memory_reward = np.zeros((MEMORY_CAPACITY, 1))
+        self.optimizer = torch.optim.Adam(self.eval_net.parameters(), lr=LR)
+        self.loss_func = nn.MSELoss()
+
+    # 选择动作
+    def choose_action(self, x):
+        x = torch.unsqueeze(torch.FloatTensor(x), 0)
+        if np.random.uniform() < EPSILON:  # 贪婪策略
+            actions_value = self.eval_net.forward(x, False).detach()
+            action = torch.max(actions_value, 1)[1].data.numpy()
+            action = action[0]
+        else:  # random
+            action = np.random.randint(0, N_ACTIONS)
+        return action
+
+    # 存储记忆
+    def store_transition(self, s, a, r, s_):
+        transition = np.hstack((s, [a, r], s_))  # 将每个参数打包起来
+        # replace the old memory with new memory
+        index = self.memory_counter % MEMORY_CAPACITY
+        self.memory_state[index, :] = s
+        self.memory_next_state[index, :] = s_
+        self.memory_action[index, :] = a
+        self.memory_reward[index, :] = r
+        # self.memory[index, :] = transition
+        self.memory_counter += 1
+
+    def learn(self):
+        # target parameter update
+        for target_param, param in zip(self.target_net.parameters(), self.eval_net.parameters()):
+            target_param.data.copy_(target_param.data * (1.0 - TAU) + param.data * TAU)
+        self.learn_step_counter += 1
+
+        # 学习过程
+        sample_index = np.random.choice(MEMORY_CAPACITY, BATCH_SIZE)
+        bound = min(T - sample_index.max(), N)-1
+        s_memory = list()
+        next_s_memory = list()
+        a_memory = list()
+        r_memory = list()
+        for index in sample_index:
+            r_memory.append(self.memory_reward[index:index+bound+1, ])
+        s_memory.append(self.memory_state[sample_index])
+        next_s_memory.append(self.memory_next_state[sample_index+bound])
+        a_memory.append(self.memory_action[sample_index])
+
+        # b_memory = self.memory[sample_index, :]
+        b_s = torch.tensor(s_memory, dtype=torch.float32).squeeze()
+        b_s_ = torch.tensor(next_s_memory, dtype=torch.float32).squeeze()
+        b_r = torch.tensor(r_memory, dtype=torch.float32)
+        b_r = torch.sum(b_r, dim=1)
+        b_a = torch.tensor(a_memory, dtype=torch.long).squeeze(0)
+
+        # q_eval w.r.t the action in experience
+        q_eval = self.eval_net(b_s)
+        q_eval = q_eval.gather(1, b_a)  # shape (batch, 1)
+        action = torch.argmax(self.eval_net(b_s_), dim=1).view(BATCH_SIZE, 1)
+        q_next = self.target_net(b_s_).gather(dim=1, index=action).detach()  # detach的作用就是不反向传播去更新，因为target的更新在前面定义好了的
+        q_target = b_r + GAMMA * q_next.view(BATCH_SIZE, 1)
+        loss = self.loss_func(q_eval, q_target)
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        return loss.data.item()
+
+
+def draw(_loss, _reward):
+    plt.suptitle("loss_info and reward_info")
+    plt1 = plt.subplot(2, 1, 1)
+    plt1.set_title("loss information")
+    plt.plot(_loss)
+    plt2 = plt.subplot(2, 1, 2)
+    plt2.set_title("reward information")
+    plt.plot(_reward)
+    plt.show()
+
+
+dqn = DQN()
+
+
+loss = list()
+reward = list()
+i_episode = 0
+for i_episode in range(400):
+    s = env.reset()  # 搜集当前环境状态。
+    ep_r = 0
+    # while True:
+    #     env.render()
+    for i in range(200):
+        env.render()
+        a = dqn.choose_action(s)
+
+        # take action
+        s_, r, done, info = env.step(a)
+
+        # modify the reward
+        x, x_dot, theta, theta_dot = s_
+        r1 = (env.x_threshold - abs(x)) / env.x_threshold - 0.8
+        r2 = (env.theta_threshold_radians - abs(theta)) / env.theta_threshold_radians - 0.5
+        r = r1 + r2
+        reward.append(r)
+        dqn.store_transition(s, a, r, s_)
+
+        ep_r += r
+        if dqn.memory_counter > MEMORY_CAPACITY:
+            loss.append(dqn.learn())
+            if done:
+                print('Ep: ', i_episode,
+                      '| Ep_r: ', round(ep_r, 2))
+        if done:
+            break
+        s = s_
+    if dqn.memory_counter > MEMORY_CAPACITY and i_episode % 20 == 0:
+        draw(loss, reward)
+        # torch.save("")
+env.close()
+print("train time : ", i_episode)

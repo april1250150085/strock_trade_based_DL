@@ -2,11 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import gym
 from Env_DQN import Environment
-from Net import Net
 from matplotlib import pyplot as plt
-
+from Net import Net
 
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
@@ -17,14 +15,14 @@ EPSILON = 0.9  # 贪婪策略指数，Q-learning的一个指数，用于指示�
 GAMMA = 1  # reward discount
 MEMORY_CAPACITY = 10000
 env = Environment()
-Hidden_num = 100
+Hidden_num = 128
 N_ACTIONS = env.action_dim
 N_STATES = env.state_dim+2
-
 
 # 创建Q-learning的模型
 class DQN(object):
     def __init__(self):
+        # 两张网是一样的，不过就是target_net是每100次更新一次，eval_net每次都更新
         self.eval_net, self.target_net = Net(N_STATES, N_ACTIONS, Hidden_num), Net(N_STATES, N_ACTIONS, Hidden_num)
 
         self.learn_step_counter = 0  # 如果次数到了，更新target_net
@@ -55,8 +53,10 @@ class DQN(object):
     def learn(self):
         for target_param, param in zip(self.target_net.parameters(), self.eval_net.parameters()):
             target_param.data.copy_(target_param.data * (1.0 - TAU) + param.data * TAU)
+
         self.learn_step_counter += 1
 
+        # 学习过程
         sample_index = np.random.choice(MEMORY_CAPACITY, BATCH_SIZE)
         b_memory = self.memory[sample_index, :]
         b_s = torch.FloatTensor(b_memory[:, :N_STATES])
@@ -64,11 +64,14 @@ class DQN(object):
         b_r = torch.FloatTensor(b_memory[:, N_STATES + 1:N_STATES + 2])
         b_s_ = torch.FloatTensor(b_memory[:, -N_STATES:])
 
-        q_eval = self.eval_net(b_s)  # 按照动作以列为对象进行索引，这样就知道当时采取的那个动作的Q值了
-        q_eval = torch.gather(q_eval, 1, b_a)
-        q_target = self.target_net(b_s_).detach()  # detach的作用就是不反向传播去更新，因为target的更新在前面定义好了的
-        y = b_r + GAMMA * q_target.max(1)[0].view(BATCH_SIZE, 1)  # shape (batch, 1)
-        loss = self.loss_func(q_eval, y)
+        # q_eval w.r.t the action in experience
+        q_eval = self.eval_net(b_s)
+        q_eval = q_eval.gather(1, b_a)  # shape (batch, 1)
+        action = torch.argmax(self.eval_net(b_s_), dim=1).view(BATCH_SIZE, 1)
+        q_next = self.target_net(b_s_).gather(dim=1, index=action).detach()  # detach的作用就是不反向传播去更新，因为target的更新在前面定义好了的
+        q_target = b_r + GAMMA * q_next.view(BATCH_SIZE, 1)
+        loss = self.loss_func(q_eval, q_target)
+
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
@@ -76,37 +79,14 @@ class DQN(object):
 
 
 def draw(_loss, _reward):
-
-    # plt.suptitle(u"TD-loss与累积收益随迭代次数变化趋势")
+    plt.suptitle("loss_info and reward_info")
     plt1 = plt.subplot(2, 1, 1)
-    plt1.set_title(u"TD-loss随迭代次数变化趋势")
-    plt.xlabel(u"迭代次数")
-    plt.ylabel(u"TD-loss")
+    plt1.set_title("loss information")
     plt.plot(_loss)
     plt2 = plt.subplot(2, 1, 2)
-    plt2.set_title(u"累积收益随迭代次数变化趋势")
-    plt.xlabel(u"迭代次数")
-    plt.ylabel(u"累积收益")
+    plt2.set_title("reward information")
     plt.plot(_reward)
     plt.show()
-
-
-def draw_loss(_loss):
-    plt.title(u"损失函数随迭代次数变化趋势")
-    plt.xlabel(u"迭代次数")
-    plt.ylabel(u"TD-loss")
-    plt.plot(_loss)
-    plt.show()
-
-
-def draw_reward(_reward):
-    plt.title("累积收益随迭代次数变化趋势")
-    plt.xlabel("迭代次数")
-    plt.ylabel("累积收益")
-    plt.plot(_reward)
-    plt.show()
-
-# dqn = DQN()
 
 
 def train():
@@ -138,7 +118,8 @@ def train():
             # draw(loss_set, reward)
             # draw_loss(loss_set)
             # draw_reward(reward)
-            torch.save(dqn, 'model2/dqn/new_norm_dqn_'+str(i_episode)+'.pt')
+            torch.save(dqn, 'model2/dqn/advance_dqn/AE_ddqn_'+str(i_episode)+'.pt')
 
 
 # train()
+
