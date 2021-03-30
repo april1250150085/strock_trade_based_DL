@@ -8,11 +8,12 @@ from matplotlib import pyplot as plt
 from Env_normal_DDPG import Environment
 import warnings
 import pandas as pd
-from lstm_reg_simple import Net as Net
+from lstm_reg_simple import Net
 
 
 warnings.filterwarnings("ignore")
 env = Environment()
+max_error = 1.85
 s_dim = env.state_dim + 2
 MAX_EPISODES = 500
 MAX_EP_STEPS = env.train_length
@@ -21,10 +22,8 @@ LR_C = 0.002  # learning rate for critic
 GAMMA = 1  # reward discount
 TAU = 0.01  # soft replacement
 MEMORY_CAPACITY = 10000
-BATCH_SIZE = 128
+BATCH_SIZE = 256
 RENDER = False
-# regdata = pd.read_csv("D:/dataset/regdata/" + env.name + ".csv")
-# reg_model = torch.load('D:/hjl_python_code/My_own_ddpg/model4/lstm_reg/lstm_reg_simple2.pt')
 
 # ENV_NAME = 'Pendulum-v0'
 
@@ -135,6 +134,9 @@ def draw(_loss, _reward):
 
 
 def train():
+    regdata = pd.read_csv("D:/dataset/regdata/" + env.name + ".csv")
+    reg_model = torch.load('D:/hjl_python_code/My_own_ddpg/model4/lstm_reg/' + env.name + '_lstm_reg_simple.pt')
+
     ddpg = DDPG(s_dim)
 
     torch.nn.utils.clip_grad_norm_(ddpg.parameters(), 10)
@@ -151,7 +153,7 @@ def train():
             a = ddpg.choose_action(s)
             a = np.clip(np.random.normal(a.data.item(), var), -10, 10)
             s_, r, r2 = env.step(a)
-            r2 = max(-1000, min(r, 1000))
+            r2 = r
             r = (r / (env.balance + env.hold * env.current_price + 1)) * 10
             b = regdata.values[j, :]
             x_ = torch.tensor(b).unsqueeze(0)
@@ -161,7 +163,8 @@ def train():
                 ddpg.store_transition(s, a, r, s_)
             else:
                 next_p = env.max_price - (env.max_price - env.min_price) * reg_model(x_).data.item()
-                if not abs(next_p - env.last_price) > 8.418 and (next_p - env.last_price) < 0:
+                # if not abs(next_p - env.last_price) > 2*max_error and (next_p - env.last_price) < 0:
+                if not (abs(next_p - env.last_price) > 2*max_error and (next_p - env.last_price)*a < 0):
                     ddpg.store_transition(s, a, r, s_)
             if j % 10000 == 0 and j > 0:
                 print(j, " reward: ", r2, " action:= ", a)
@@ -182,8 +185,9 @@ def train():
         if ddpg.pointer > MEMORY_CAPACITY and i % 50 == 0:
             draw(q_list, td_error)
         if ddpg.pointer > MEMORY_CAPACITY and i % 10 == 0:
-            torch.save(ddpg, "model2/ddpg/norm_filter_ddpg_" + str(i) + ".pt")
+            torch.save(ddpg, "new_model2/ddpg/"+env.name+"_norm_filter_ddpg_" + str(i) + ".pt")
+            # torch.save(ddpg, "new_model2/ddpg/"+env.name+"_AE_filter_ddpg_" + str(i) + ".pt")
     print('Running time: ', time.time() - t1)
 
 
-# train()
+train()
